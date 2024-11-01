@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from os.path import isfile, join as pathjoin
 
-from archive.compat import IS_PY2
 from archive import Archive, extract, UnsafeArchive, UnrecognizedArchiveFormat
 
 
@@ -131,14 +130,8 @@ class TestNonAsciiNamedTar(ArchiveTester, unittest.TestCase):
     archive = '圧縮.tgz'
 
 
-if IS_PY2:
-    _UNICODE_NAME = unicode('圧縮.zip', 'utf-8')
-else:
-    _UNICODE_NAME = '圧縮.zip'
-
-
 class TestUnicodeNamedZip(ArchiveTester, unittest.TestCase):
-    archive = _UNICODE_NAME
+    archive = '圧縮.zip'
 
 
 class TestExplicitExt(ArchiveTester, unittest.TestCase):
