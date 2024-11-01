@@ -28,5 +28,8 @@ setup(
     description = ('Simple library that provides a common interface for'
                    ' extracting zip and tar archives.'),
     long_description = open('README.rst').read(),
+    install_requires = [
+    line.strip() for line in open('requirements.txt')
+    ],
     tests_require=["tox", "pytest", "pep8"],
 )

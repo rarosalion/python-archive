@@ -9,3 +9,4 @@ MANIFEST
 .pydevproject
 .settings
 .coverage
+.DS_Store

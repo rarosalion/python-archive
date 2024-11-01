@@ -2,9 +2,111 @@ import os
 import sys
 import tarfile
 import zipfile
+import bz2
+import gzip
+import py7zr
 
-from archive.compat import IS_PY2, is_string
 
+"""
+Present a list of readable files from an
+archive or compressed file
+"""
+
+def files_in_bundle(file):
+
+    try:
+        a = Archive(file)
+        for sub_file in a.filenames():
+            yield (sub_file, a.read_file(sub_file))
+        return
+    except ArchiveException as e:
+        pass
+
+    try:
+        f = CompressedFile(file)
+        yield (file, f)
+        return
+    except CompressionException as e:
+        pass
+
+
+"""
+Classes to read files of various compression types
+A File should be an individual file, not an archive that 
+can contain multiple sub-files
+"""
+
+class CompressionException(Exception):
+    """ Base exception class for all compression errors. """
+
+class UnrecognizedCompressionFormat(CompressionException):
+    """ Contents do not match any known compression type """
+    
+class CompressedFile(object):
+
+    """
+    The external API class that encapsulates an file implementation.
+    """
+
+    def __new__(self, file):
+        """
+        Arguments:
+        * 'file' can be a string path to a file or a file-like object.
+        """
+        # Check known archive types
+        for subclass in CompressedFile.__subclasses__():
+            if subclass.is_compressed(file):
+                return super().__new__(subclass)
+        else:
+            raise UnrecognizedCompressionFormat()
+
+    def __init__(self, file):
+        if isinstance(file, str):
+            self._file = self._open(file, 'rb')
+        else:
+            self._file = file
+
+    @classmethod
+    def is_compressed(cls, file):
+        if isinstance(file, str):
+            f = open(file, 'rb')
+        else:
+            f = file
+
+        try:
+            header = f.read(len(cls.MAGIC_BYTES))
+            return header == cls.MAGIC_BYTES
+        except NameError:
+            # Sub-classes must implement the MAGIC_BYTES value, or re-implement this method
+            raise NotImplementedError()
+
+    def _open(self, *args, **kwargs):
+        raise NotImplementedError()
+    
+    def read(self, *args, **kwargs):
+        return self._file.read(*args, **kwargs)
+
+
+class BzFile(CompressedFile):
+    MAGIC_BYTES = b'BZh'
+
+    def _open(self, filename, mode='r'):
+        self._file = bz2.BZ2File(filename, mode)
+        return self._file
+
+
+class GzFile(CompressedFile):
+    MAGIC_BYTES = b'\x1f\x8b'
+
+    def _open(self, filename, mode='r'):
+        self._file = gzip.GzipFile(filename, mode)
+        return self._file
+
+
+"""
+Classes to implement archives.
+An archive should have multiple files within it.
+"""
 
 class ArchiveException(Exception):
     """Base exception class for all archive errors."""
@@ -20,79 +122,22 @@ class UnsafeArchive(ArchiveException):
     outside of the target directory.
     """
 
-
-def extract(path, to_path='', ext='', **kwargs):
-    """
-    Unpack the tar or zip file at the specified path to the directory
-    specified by to_path.
-    """
-    Archive(path, ext=ext).extract(to_path, **kwargs)
-
-
 class Archive(object):
     """
     The external API class that encapsulates an archive implementation.
     """
 
-    def __init__(self, file, ext=''):
+    def __new__(self, file):
         """
         Arguments:
         * 'file' can be a string path to a file or a file-like object.
-        * Optional 'ext' argument can be given to override the file-type
-          guess that is normally performed using the file extension of the
-          given 'file'.  Should start with a dot, e.g. '.tar.gz'.
         """
-        self._archive = self._archive_cls(file, ext=ext)(file)
-
-    @staticmethod
-    def _archive_cls(file, ext=''):
-        """
-        Return the proper Archive implementation class, based on the file type.
-        """
-        cls = None
-        filename = None
-        if is_string(file):
-            filename = file
+        # Check known archive types
+        for subclass in Archive.__subclasses__():
+            if subclass.is_archive(file):
+                return super().__new__(subclass)
         else:
-            try:
-                filename = file.name
-            except AttributeError:
-                raise UnrecognizedArchiveFormat(
-                    "File object not a recognized archive format.")
-        lookup_filename = filename + ext
-        base, tail_ext = os.path.splitext(lookup_filename.lower())
-        cls = extension_map.get(tail_ext)
-        if not cls:
-            base, ext = os.path.splitext(base)
-            cls = extension_map.get(ext)
-        if not cls:
-            raise UnrecognizedArchiveFormat(
-                "Path not a recognized archive format: %s" % filename)
-        return cls
-
-    def extract(self, *args, **kwargs):
-        self._archive.extract(*args, **kwargs)
-
-    def list(self):
-        self._archive.list()
-
-
-class BaseArchive(object):
-    """
-    Base Archive class.  Implementations should inherit this class.
-    """
-    def __del__(self):
-        if hasattr(self, "_archive"):
-            self._archive.close()
-
-    def list(self):
-        raise NotImplementedError()
-
-    def filenames(self):
-        """
-        Return a list of the filenames contained in the archive.
-        """
-        raise NotImplementedError()
+            raise UnrecognizedArchiveFormat("File object is not recognised by available archive libraries")
 
     def _extract(self, to_path):
         """
@@ -128,49 +173,82 @@ class BaseArchive(object):
                     "Archive member destination is outside the target"
                     " directory.  member: %s" % filename)
 
+    """
+    Methods below must be implemented in the subclass
+    """
+    @staticmethod
+    def is_archive(name):
+        raise NotImplementedError()
 
-class TarArchive(BaseArchive):
+    def list(self):
+        raise NotImplementedError()
+
+    def filenames(self):
+        raise NotImplementedError()
+
+    def read_file(self, name):
+        raise NotImplementedError()
+
+
+
+class TarArchive(Archive):
 
     def __init__(self, file):
         # tarfile's open uses different parameters for file path vs. file obj.
-        if is_string(file):
+        if isinstance(file, str):
             self._archive = tarfile.open(name=file)
         else:
             self._archive = tarfile.open(fileobj=file)
+
+    @staticmethod
+    def is_archive(name):
+        return tarfile.is_tarfile(name)
 
     def list(self, *args, **kwargs):
         self._archive.list(*args, **kwargs)
 
     def filenames(self):
         return self._archive.getnames()
+    
+    def read_file(self, name):
+        return self._archive.extractfile(name)
 
 
-class ZipArchive(BaseArchive):
+class ZipArchive(Archive):
 
     def __init__(self, file):
         # ZipFile's 'file' parameter can be path (string) or file-like obj.
         self._archive = zipfile.ZipFile(file)
+
+    @staticmethod
+    def is_archive(name):
+        return zipfile.is_zipfile(name)
 
     def list(self, *args, **kwargs):
         self._archive.printdir(*args, **kwargs)
 
     def filenames(self):
         return self._archive.namelist()
+    
+    def read_file(self, name):
+        return self._archive.open(name)
 
-extension_map = {
-    '.docx': ZipArchive,
-    '.egg': ZipArchive,
-    '.jar': ZipArchive,
-    '.odg': ZipArchive,
-    '.odp': ZipArchive,
-    '.ods': ZipArchive,
-    '.odt': ZipArchive,
-    '.pptx': ZipArchive,
-    '.tar': TarArchive,
-    '.tar.bz2': TarArchive,
-    '.tar.gz': TarArchive,
-    '.tgz': TarArchive,
-    '.tz2': TarArchive,
-    '.xlsx': ZipArchive,
-    '.zip': ZipArchive,
-}
+
+class SevenZipArchive(Archive):
+
+    def __init__(self, file):
+        # SevenZip's 'file' parameter can be path (string) or file-like obj.
+        self._archive = py7zr.SevenZipFile(file)
+
+    @staticmethod
+    def is_archive(name):
+        return zipfile.is_zipfile(name)
+
+    def list(self, *args, **kwargs):
+        self._archive.printdir(*args, **kwargs)
+
+    def filenames(self):
+        return self._archive.namelist()
+    
+    def read_file(self, name):
+        return self._archive.open(name)
